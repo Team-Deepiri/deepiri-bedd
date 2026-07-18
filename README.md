@@ -2,87 +2,91 @@
 
 **Flint** is Deepiri's stream-native AI worker runtime — the Bun analogue for the event plane.
 
-Where Bun is a fast single-binary JS runtime, Flint is a fast single-binary **stream → skill → stream** runtime written in Zig: consume Sugar Glider / Redis Streams, run hot-loaded WASM skills (embedding, extract, splice, pressure), publish typed results back onto the Deepiri bus.
+A single Zig binary: **consume** Sugar Glider streams → **run** a skill (native or WASM) → **publish** results → **ACK**.
 
-## Why
+## Quick start
 
-Deepiri already has producers (Cyrex, LIS, Helox) and a bus (Sugar Glider + Synapse + ModelKit topics). What we lack is a **tiny, cold-start-cheap worker host** that:
+```bash
+# Zig 0.13+
+zig build
+zig build test
 
-1. Speaks the bus natively (no Python/Node sidecar tax per skill)
-2. Loads skills as WASM (safe, language-agnostic, hot-reloadable)
-3. Fits edge / laptop / k8s sidecars equally well
-4. Is boringly reliable (Zig: no GC pauses, explicit allocators, static linking)
+./zig-out/bin/flint version
+./zig-out/bin/flint doctor
+./zig-out/bin/flint skills
+./zig-out/bin/flint strike document.artifacts document.artifacts.route echo
 
-## Name
+# Live consumer (needs Sugar Glider)
+export FLINT_SUGAR_GLIDER_URL=http://127.0.0.1:8081
+export FLINT_TINDER=./tinder.example.json
+export FLINT_DRY_RUN=1   # optional: no publish/ack side effects
+./zig-out/bin/flint serve
+```
 
-**Flint** — the spark that starts the fire. One strike (binary) → flame (skill execution) on the Deepiri stream plane.
-
-## Architecture (v0)
+## Architecture
 
 ```
   document.* / pipeline.* / model-events
               │
               ▼
      ┌─────────────────┐
-     │  flint daemon   │  Zig single binary
-     │  ┌───────────┐  │
-     │  │ bus client│◄─┼── Sugar Glider HTTP (/v1/publish,/v1/read,/v1/ack)
-     │  └─────┬─────┘  │
-     │        ▼        │
-     │  ┌───────────┐  │
-     │  │ skill vm  │  │  WASM plugins (WASI)
-     │  └─────┬─────┘  │
-     │        ▼        │
-     │  ┌───────────┐  │
-     │  │ publish   │──┼──→ inference-events / document.artifacts / …
-     │  └───────────┘  │
+     │  flint serve    │
+     │  bus client ────┼── Sugar Glider /healthz /v1/publish /v1/read /v1/ack
+     │  tinder routes  │
+     │  skill registry │── native builtins + *.wasm (flint_skill_v1 via wasm3)
+     │  ember metrics  │
      └─────────────────┘
 ```
-
-### Core concepts
 
 | Concept | Meaning |
 |--------|---------|
 | **Strike** | One consume→execute→publish cycle |
-| **Skill** | WASM module implementing `flint_skill_v1` ABI |
-| **Tinder** | Config that maps stream + event_type → skill |
-| **Ember** | In-process metrics / last-N strike traces |
+| **Skill** | Native builtin or WASM module (`flint_skill_v1`) |
+| **Tinder** | JSON map: stream + event_type → skill + publish target |
+| **Ember** | In-process counters + last-N strike traces |
 
-### Skill ABI (sketch)
+## Built-in skills
 
-Skills export:
+- `echo` — wrap input with flint metadata
+- `passthrough` — republish payload unchanged
+- `pressure_tag` — tag `pipeline.pressure.events` for metrics
+- `document_fanout` — shape LIS document routes for Helox/inference
 
-- `flint_skill_name() -> ptr/len`
-- `flint_skill_on_event(ptr, len) -> status` (JSON in/out via linear memory)
+## WASM skills (`flint_skill_v1`)
 
-Flint owns HTTP to Sugar Glider; skills never touch Redis.
+Place `name.wasm` or `name_skill.wasm` under `FLINT_SKILLS_DIR` (default `zig-out/skills`).
 
-## Novel vs existing stack
+Exports:
 
-| Piece | Role | Flint role |
-|-------|------|------------|
-| Cyrex | AGI orchestration / training emission | Upstream producer |
-| Helox | Training runtime | Upstream consumer |
-| LIS | Document intelligence | Upstream producer (`document.*`) |
-| Sugar Glider | Bus sidecar | Transport Flint speaks |
-| ModelKit | Topics + schemas | Contracts Flint honors |
-| **Flint** | **Local skill host** | **New** — Bun-for-streams |
+- `flint_abi_version() -> i32` (=1)
+- `flint_on_event(in_ptr:i32, in_len:i32) -> i32` (0=ok)
 
-## Roadmap
+Imports (`flint` module):
 
-- **v0 (this repo):** binary scaffold, config, bus client stub, `flint strike` dry-run, CI + CodeQL
-- **v1:** real Sugar Glider HTTP client + one sample WASM skill (echo / JSON transform)
-- **v2:** consumer groups, ACK, DLQ, skill hot-reload
-- **v3:** optional llama.cpp / ONNX host plugins for edge inference strikes
+- `host_alloc(size:i32) -> i32`
+- `host_set_result(ptr:i32, len:i32)`
 
-## Build
+Sample: `skills/echo_skill.zig` → `zig-out/skills/echo_skill.wasm`
 
-```bash
-# Zig 0.13+
-zig build
-./zig-out/bin/flint --help
-```
+## Tinder config
+
+See `tinder.example.json`. Env: `FLINT_TINDER=/path/to/tinder.json`.
+
+## Env
+
+| Variable | Default |
+|----------|---------|
+| `FLINT_SUGAR_GLIDER_URL` | `http://127.0.0.1:8081` |
+| `FLINT_SENDER` | `flint` |
+| `FLINT_CONSUMER_GROUP` | `flint-workers` |
+| `FLINT_CONSUMER_NAME` | `flint-1` |
+| `FLINT_SKILLS_DIR` | `zig-out/skills` |
+| `FLINT_TINDER` | (built-in defaults) |
+| `FLINT_DRY_RUN` | `false` |
+| `FLINT_BLOCK_MS` | `2000` |
+| `FLINT_READ_COUNT` | `10` |
 
 ## License
 
-Proprietary — Team Deepiri. Private repository.
+Proprietary — Team Deepiri. Private repository.  
+Vendored [wasm3](https://github.com/wasm3/wasm3) under its MIT license (`vendor/wasm3`).

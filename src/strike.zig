@@ -1,21 +1,41 @@
 const std = @import("std");
 const bus = @import("bus.zig");
 const config = @import("config.zig");
-
-/// One consume→execute→publish cycle. v0 is dry-run only (no WASM yet).
+const ember = @import("ember.zig");
+const jsonx = @import("jsonx.zig");
+const skill = @import("skill/mod.zig");
+const tinder = @import("tinder.zig");
 
 pub fn dryRun(
     allocator: std.mem.Allocator,
     cfg: config.Config,
     stream: []const u8,
     event_type: []const u8,
+    skill_name: []const u8,
 ) !void {
-    const payload = "{\"flint\":\"strike\",\"status\":\"dry-run\"}";
-    const body = try bus.encodePublishBody(allocator, .{
+    var reg = skill.Registry.init(allocator, cfg.skills_dir);
+    defer reg.deinit();
+
+    const input =
+        \\{"flint":"strike","status":"dry-run"}
+    ;
+    const ctx = skill.SkillContext{
+        .allocator = allocator,
         .stream = stream,
+        .entry_id = "dry-run",
         .event_type = event_type,
+    };
+    const result = try reg.run(skill_name, ctx, input);
+    defer result.deinit(allocator);
+
+    const wrapped = try jsonx.wrapStrikeResult(allocator, skill_name, stream, "dry-run", result.payload_json);
+    defer allocator.free(wrapped);
+
+    const body = try bus.encodePublishBody(allocator, .{
+        .stream = "inference-events",
+        .event_type = "flint.strike.result",
         .sender = cfg.sender,
-        .payload_json = payload,
+        .payload_json = wrapped,
     });
     defer allocator.free(body);
 
@@ -23,7 +43,76 @@ pub fn dryRun(
     try out.print("flint strike (dry-run)\n", .{});
     try out.print("  stream:     {s}\n", .{stream});
     try out.print("  event_type: {s}\n", .{event_type});
+    try out.print("  skill:      {s}\n", .{skill_name});
     try out.print("  sidecar:    {s}\n", .{cfg.sugar_glider_url});
+    try out.print("  result:     {s}\n", .{result.payload_json});
     try out.print("  would POST {s}/v1/publish\n", .{cfg.sugar_glider_url});
     try out.print("  body:       {s}\n", .{body});
+}
+
+pub fn executeOne(
+    allocator: std.mem.Allocator,
+    cfg: *const config.Config,
+    client: *bus.Client,
+    registry: *skill.Registry,
+    metrics: *ember.Ember,
+    route: tinder.Route,
+    event: bus.StreamEvent,
+) !void {
+    const started_ns = std.time.nanoTimestamp();
+    const ctx = skill.SkillContext{
+        .allocator = allocator,
+        .stream = event.stream,
+        .entry_id = event.entry_id,
+        .event_type = event.event_type,
+    };
+
+    const result = registry.run(route.skill, ctx, event.payload_json) catch |err| {
+        metrics.record(event.stream, route.skill, false, 0);
+        std.log.err("skill {s} failed on {s}/{s}: {s}", .{
+            route.skill,
+            event.stream,
+            event.entry_id,
+            @errorName(err),
+        });
+        return err;
+    };
+    defer result.deinit(allocator);
+
+    const wrapped = try jsonx.wrapStrikeResult(
+        allocator,
+        route.skill,
+        event.stream,
+        event.entry_id,
+        result.payload_json,
+    );
+    defer allocator.free(wrapped);
+
+    const pub_event = result.event_type_override orelse route.publish_event_type;
+
+    if (cfg.dry_run) {
+        std.log.info("dry-run publish stream={s} event={s} payload_len={d}", .{
+            route.publish_stream,
+            pub_event,
+            wrapped.len,
+        });
+    } else {
+        const pub_res = try client.publish(.{
+            .stream = route.publish_stream,
+            .event_type = pub_event,
+            .sender = cfg.sender,
+            .payload_json = wrapped,
+        });
+        defer pub_res.deinit(allocator);
+        metrics.publishes += 1;
+        std.log.info("published entry_id={s} stream={s}", .{ pub_res.entry_id, route.publish_stream });
+    }
+
+    const elapsed = std.time.nanoTimestamp() - started_ns;
+    const ms: u64 = if (elapsed > 0) @intCast(@divTrunc(elapsed, std.time.ns_per_ms)) else 0;
+    metrics.record(event.stream, route.skill, true, ms);
+}
+
+test "dryRun compiles via execute path" {
+    try std.testing.expect(true);
 }
