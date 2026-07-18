@@ -1,0 +1,9 @@
+zig-cache/
+.zig-cache/
+zig-out/
+*.o
+*.a
+.DS_Store
+.env
+.env.*
+!.env.example
