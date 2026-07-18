@@ -51,5 +51,8 @@ jobs:
           ./zig-out/bin/bedd strike inbox demo.event echo
           BEDD_SKILLS_DIR=zig-out/skills ./zig-out/bin/bedd strike inbox demo.event echo_skill
 
-      - name: Local demo (mock Sugar Glider)
+      - name: Local demo (mock bus)
         run: ./zig-out/bin/bedd demo
+
+      - name: Bench smoke
+        run: ./zig-out/bin/bedd bench --iterations 10 --skills echo,redact --json

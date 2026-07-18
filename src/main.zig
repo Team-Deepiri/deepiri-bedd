@@ -8,6 +8,7 @@ const eval = @import("eval.zig");
 const shutdown = @import("shutdown.zig");
 const tinder_validate = @import("tinder_validate.zig");
 const bus_mock = @import("bus_mock.zig");
+const bench = @import("bench.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -72,6 +73,10 @@ pub fn main() !void {
         try runDemo(allocator, &cfg);
         return;
     }
+    if (eql(command, "bench")) {
+        try runBench(allocator, &args);
+        return;
+    }
     if (eql(command, "serve")) {
         try serve.run(allocator, &cfg);
         return;
@@ -85,6 +90,37 @@ pub fn main() !void {
     try std.io.getStdErr().writer().print("bedd: unknown command '{s}'\n", .{command});
     try printHelp();
     std.process.exit(1);
+}
+
+fn runBench(allocator: std.mem.Allocator, args: *std.process.ArgIterator) !void {
+    var iterations: u32 = 50;
+    var json = false;
+    var skill_list = std.ArrayList([]const u8).init(allocator);
+    defer skill_list.deinit();
+
+    while (args.next()) |a| {
+        if (eql(a, "--json")) {
+            json = true;
+        } else if (eql(a, "--iterations") or eql(a, "-n")) {
+            const v = args.next() orelse "50";
+            iterations = std.fmt.parseInt(u32, v, 10) catch 50;
+        } else if (eql(a, "--skills")) {
+            const v = args.next() orelse "echo";
+            var it = std.mem.splitScalar(u8, v, ',');
+            while (it.next()) |s| {
+                if (s.len > 0) try skill_list.append(s);
+            }
+        }
+    }
+    if (skill_list.items.len == 0) {
+        try skill_list.append("echo");
+        try skill_list.append("redact");
+        try skill_list.append("fingerprint");
+    }
+
+    var report = try bench.runMockBench(allocator, iterations, skill_list.items);
+    defer report.deinit(allocator);
+    try bench.printReport(allocator, &report, json);
 }
 
 fn runDemo(allocator: std.mem.Allocator, cfg: *config.Config) !void {
@@ -161,6 +197,7 @@ fn printHelp() !void {
         \\  bedd tinder validate [path]
         \\  bedd strike [stream] [event_type] [skill]
         \\  bedd demo
+        \\  bedd bench [--iterations N] [--skills echo,redact] [--json]
         \\  bedd serve
         \\
         \\Env:

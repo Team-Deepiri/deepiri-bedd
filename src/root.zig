@@ -21,6 +21,7 @@ pub const shutdown = @import("shutdown.zig");
 pub const publish_retry = @import("publish_retry.zig");
 pub const tinder_validate = @import("tinder_validate.zig");
 pub const integration_test = @import("integration_test.zig");
+pub const bench = @import("bench.zig");
 
 test {
     _ = bus;
@@ -45,4 +46,5 @@ test {
     _ = publish_retry;
     _ = tinder_validate;
     _ = integration_test;
+    _ = bench;
 }

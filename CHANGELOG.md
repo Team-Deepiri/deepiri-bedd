@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.0 — spark
+- `bedd bench` — mock-bus e2e perf (throughput, p50/p95/p99, error rate, JSON report)
+- Hardened for integration/perf experiments against host buses
+
 ## 0.5.0 — spark
 - Rename Flint → **Bedd**
 - Primitive core: opaque streams, `BEDD_BUS_URL`, configurable `BEDD_DLQ_STREAM`
