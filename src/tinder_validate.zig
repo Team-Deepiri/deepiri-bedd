@@ -52,9 +52,27 @@ pub fn validateFile(allocator: std.mem.Allocator, path: []const u8) ![]Validatio
         }
         if (r.skill.len == 0) {
             try issues.append(.{ .level = .err, .message = try allocator.dupe(u8, "route with empty skill") });
-        } else if (!known.contains(r.skill) and !std.mem.endsWith(u8, r.skill, "_skill")) {
-            const msg = try std.fmt.allocPrint(allocator, "unknown skill '{s}' on stream {s}", .{ r.skill, r.stream });
-            try issues.append(.{ .level = .warn, .message = msg });
+        } else {
+            var sit = std.mem.splitScalar(u8, r.skill, ',');
+            while (sit.next()) |part| {
+                const name = std.mem.trim(u8, part, " \t");
+                if (name.len == 0) continue;
+                if (!known.contains(name) and !std.mem.endsWith(u8, name, "_skill")) {
+                    const msg = try std.fmt.allocPrint(allocator, "unknown skill '{s}' on stream {s}", .{ name, r.stream });
+                    try issues.append(.{ .level = .warn, .message = msg });
+                }
+            }
+        }
+        if (r.recovery_skill.len > 0) {
+            var rit = std.mem.splitScalar(u8, r.recovery_skill, ',');
+            while (rit.next()) |part| {
+                const name = std.mem.trim(u8, part, " \t");
+                if (name.len == 0) continue;
+                if (!known.contains(name) and !std.mem.endsWith(u8, name, "_skill")) {
+                    const msg = try std.fmt.allocPrint(allocator, "unknown recovery_skill '{s}' on stream {s}", .{ name, r.stream });
+                    try issues.append(.{ .level = .warn, .message = msg });
+                }
+            }
         }
         if (r.publish_stream.len == 0) {
             try issues.append(.{ .level = .err, .message = try allocator.dupe(u8, "route with empty publish_stream") });
