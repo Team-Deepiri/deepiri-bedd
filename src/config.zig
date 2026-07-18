@@ -1,6 +1,7 @@
+const version_mod = @import("util/version.zig");
 const std = @import("std");
 
-pub const version = "0.2.0";
+pub const version = version_mod.semver;
 
 pub const Config = struct {
     allocator: std.mem.Allocator,
