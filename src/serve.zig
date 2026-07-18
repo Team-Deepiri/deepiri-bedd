@@ -5,6 +5,11 @@ const ember_mod = @import("ember.zig");
 const skill = @import("skill/mod.zig");
 const strike = @import("strike.zig");
 const tinder_mod = @import("tinder.zig");
+const shutdown = @import("shutdown.zig");
+const admin = @import("admin/server.zig");
+const bus_dlq = @import("bus_dlq.zig");
+const util_log = @import("util/log.zig");
+const util_env = @import("util/env.zig");
 
 pub fn run(allocator: std.mem.Allocator, cfg: *config.Config) !void {
     var tinder = try tinder_mod.loadOrDefault(allocator, cfg.tinder_path);
@@ -16,6 +21,18 @@ pub fn run(allocator: std.mem.Allocator, cfg: *config.Config) !void {
     var metrics = ember_mod.Ember{};
     var client = bus.Client.init(allocator, cfg.*);
     defer client.deinit();
+
+    util_log.setLevelFromEnv();
+    var admin_server = admin.Server{
+        .allocator = allocator,
+        .cfg = cfg,
+        .metrics = &metrics,
+        .port = @intCast(util_env.getU64("FLINT_ADMIN_PORT", 9108)),
+    };
+    admin_server.start() catch |err| {
+        std.log.warn("admin server failed to start: {s}", .{@errorName(err)});
+    };
+    defer admin_server.shutdown();
 
     const streams = try tinder.uniqueStreams(allocator);
     defer allocator.free(streams);
@@ -32,7 +49,7 @@ pub fn run(allocator: std.mem.Allocator, cfg: *config.Config) !void {
     try skill.Registry.listBuiltins(out);
 
     var consecutive_failures: u32 = 0;
-    while (true) {
+    while (!shutdown.shouldStop()) {
         var progressed = false;
         for (streams) |stream| {
             const events = client.read(.{
@@ -74,7 +91,10 @@ pub fn run(allocator: std.mem.Allocator, cfg: *config.Config) !void {
                     continue;
                 };
 
-                strike.executeOne(allocator, cfg, &client, &registry, &metrics, route, event) catch {
+                strike.executeOne(allocator, cfg, &client, &registry, &metrics, route, event) catch |err| {
+                    if (!cfg.dry_run) {
+                        bus_dlq.publishDeadLetter(&client, cfg.sender, event.stream, event.entry_id, @errorName(err), event.payload_json) catch {};
+                    }
                     // Leave unacked for retry
                     continue;
                 };
