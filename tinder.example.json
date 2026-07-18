@@ -2,24 +2,41 @@
   "routes": [
     {
       "stream": "inbox",
+      "exchange": "direct",
       "event_type": "*",
       "skill": "echo",
       "publish_stream": "outbox",
-      "publish_event_type": "bedd.strike.result"
+      "publish_event_type": "bedd.strike.result",
+      "confirm": true
     },
     {
       "stream": "inbox",
+      "exchange": "topic",
       "event_type": "secure.*",
-      "skill": "redact",
+      "skill": "redact,drop_fields",
       "publish_stream": "outbox",
-      "publish_event_type": "bedd.redacted"
+      "publish_event_type": "bedd.redacted",
+      "recovery_skill": "passthrough",
+      "confirm": true
     },
     {
       "stream": "inbox",
-      "event_type": "fingerprint.*",
+      "exchange": "headers",
+      "headers": "env=prod",
+      "event_type": "*",
       "skill": "fingerprint",
       "publish_stream": "outbox",
-      "publish_event_type": "bedd.fingerprinted"
+      "publish_event_type": "bedd.fingerprinted",
+      "confirm": true
+    },
+    {
+      "stream": "broadcast",
+      "exchange": "fanout",
+      "event_type": "*",
+      "skill": "passthrough",
+      "publish_stream": "outbox",
+      "publish_event_type": "bedd.fanout",
+      "confirm": false
     }
   ]
 }

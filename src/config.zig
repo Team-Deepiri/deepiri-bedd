@@ -12,10 +12,14 @@ pub const Config = struct {
     tinder_path: ?[]u8,
     skills_dir: []u8,
     dlq_stream: []u8,
+    confirm_stream: []u8,
     timeout_ms: u64,
     block_ms: i64,
     read_count: i64,
+    prefetch: i64,
     dry_run: bool,
+    lean: bool,
+    confirms: bool,
     admin_port: u16,
 
     pub fn deinit(self: *Config) void {
@@ -26,6 +30,7 @@ pub const Config = struct {
         if (self.tinder_path) |p| self.allocator.free(p);
         self.allocator.free(self.skills_dir);
         self.allocator.free(self.dlq_stream);
+        self.allocator.free(self.confirm_stream);
     }
 };
 
@@ -56,6 +61,7 @@ pub fn loadFromEnv(allocator: std.mem.Allocator) !Config {
     const consumer_name = try envOr(allocator, &.{"BEDD_CONSUMER_NAME"}, "bedd-1");
     const skills_dir = try envOr(allocator, &.{"BEDD_SKILLS_DIR"}, "zig-out/skills");
     const dlq_stream = try envOr(allocator, &.{"BEDD_DLQ_STREAM"}, "dead-letter");
+    const confirm_stream = try envOr(allocator, &.{"BEDD_CONFIRM_STREAM"}, "bedd.confirms");
 
     var tinder_path: ?[]u8 = null;
     if (std.posix.getenv("BEDD_TINDER")) |v| {
@@ -67,7 +73,10 @@ pub fn loadFromEnv(allocator: std.mem.Allocator) !Config {
     const timeout_ms = parseU64(std.posix.getenv("BEDD_TIMEOUT_MS"), 5000);
     const block_ms: i64 = @intCast(parseU64(std.posix.getenv("BEDD_BLOCK_MS"), 2000));
     const read_count: i64 = @intCast(parseU64(std.posix.getenv("BEDD_READ_COUNT"), 10));
+    const prefetch: i64 = @intCast(parseU64(std.posix.getenv("BEDD_PREFETCH"), @intCast(read_count)));
     const dry_run = parseBool(std.posix.getenv("BEDD_DRY_RUN"), false);
+    const lean = parseBool(std.posix.getenv("BEDD_LEAN"), false);
+    const confirms = parseBool(std.posix.getenv("BEDD_CONFIRMS"), true);
     const admin_port: u16 = @intCast(parseU64(std.posix.getenv("BEDD_ADMIN_PORT"), 9108));
 
     return .{
@@ -79,10 +88,14 @@ pub fn loadFromEnv(allocator: std.mem.Allocator) !Config {
         .tinder_path = tinder_path,
         .skills_dir = skills_dir,
         .dlq_stream = dlq_stream,
+        .confirm_stream = confirm_stream,
         .timeout_ms = timeout_ms,
         .block_ms = block_ms,
         .read_count = read_count,
+        .prefetch = prefetch,
         .dry_run = dry_run,
+        .lean = lean,
+        .confirms = confirms,
         .admin_port = admin_port,
     };
 }

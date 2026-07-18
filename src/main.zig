@@ -231,9 +231,13 @@ fn printHelp() !void {
         \\  BEDD_SENDER             publish sender (default bedd)
         \\  BEDD_CONSUMER_GROUP     consumer group (default bedd-workers)
         \\  BEDD_CONSUMER_NAME      consumer name (default bedd-1)
-        \\  BEDD_TINDER             path to route JSON file
+        \\  BEDD_TINDER             path to route JSON file (skill-exchange bindings)
         \\  BEDD_SKILLS_DIR         WASM skill directory (default zig-out/skills)
         \\  BEDD_DLQ_STREAM         dead-letter stream (default dead-letter)
+        \\  BEDD_CONFIRM_STREAM     confirm stream (default bedd.confirms)
+        \\  BEDD_CONFIRMS           emit confirms after publish (default true)
+        \\  BEDD_PREFETCH           max entries per read; weighted by skill cost
+        \\  BEDD_LEAN               publish raw skill JSON without wrap envelope
         \\  BEDD_DROP_FIELDS        comma keys for drop_fields skill
         \\  BEDD_DRY_RUN            if true/1, skip publish/ack side effects
         \\  BEDD_BLOCK_MS           read block ms (default 2000)

@@ -56,6 +56,10 @@ test "end-to-end strike against mock bus" {
         .skill = "redact",
         .publish_stream = "outbox",
         .publish_event_type = "bedd.strike.result",
+        .exchange_kind = .direct,
+        .headers = "",
+        .recovery_skill = "",
+        .confirm = true,
     };
 
     try strike.executeOne(

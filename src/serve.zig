@@ -11,6 +11,7 @@ const bus_dlq = @import("bus_dlq.zig");
 const util_log = @import("util/log.zig");
 const retry = @import("retry.zig");
 const publish_retry = @import("publish_retry.zig");
+const exchange = @import("exchange.zig");
 const fsutil = @import("util/fsutil.zig");
 
 pub fn run(allocator: std.mem.Allocator, cfg: *config.Config) !void {
@@ -50,19 +51,21 @@ pub fn run(allocator: std.mem.Allocator, cfg: *config.Config) !void {
 
     const out = std.io.getStdOut().writer();
     try out.print("bedd serve\n", .{});
-    try out.print("  version: {s}\n", .{config.version});
-    try out.print("  sidecar: {s}\n", .{cfg.bus_url});
-    try out.print("  group:   {s}\n", .{cfg.consumer_group});
-    try out.print("  name:    {s}\n", .{cfg.consumer_name});
-    try out.print("  admin:   :{d}\n", .{cfg.admin_port});
-    try out.print("  dry_run: {}\n", .{cfg.dry_run});
+    try out.print("  version:  {s}\n", .{config.version});
+    try out.print("  bus:      {s}\n", .{cfg.bus_url});
+    try out.print("  group:    {s}\n", .{cfg.consumer_group});
+    try out.print("  name:     {s}\n", .{cfg.consumer_name});
+    try out.print("  admin:    :{d}\n", .{cfg.admin_port});
+    try out.print("  prefetch: {d}\n", .{cfg.prefetch});
+    try out.print("  lean:     {}\n", .{cfg.lean});
+    try out.print("  confirms: {}\n", .{cfg.confirms});
+    try out.print("  dry_run:  {}\n", .{cfg.dry_run});
     try printStreams(out, streams);
     try out.writeAll("  skills:\n");
     try skill.Registry.listBuiltins(out);
 
     var consecutive_failures: u32 = 0;
     while (!shutdown.shouldStop()) {
-        // SIGHUP or tinder file mtime change → reload
         var should_reload = shutdown.takeReload();
         if (cfg.tinder_path) |path| {
             const mt = fileMtime(path);
@@ -94,11 +97,14 @@ pub fn run(allocator: std.mem.Allocator, cfg: *config.Config) !void {
             defer arena.deinit();
             const batch_alloc = arena.allocator();
 
+            const cost = tinder.maxCostForStream(stream);
+            const count = exchange.effectivePrefetch(cfg.prefetch, cost);
+
             const events = client.read(.{
                 .stream = stream,
                 .consumer_group = cfg.consumer_group,
                 .consumer_name = cfg.consumer_name,
-                .count = cfg.read_count,
+                .count = count,
                 .block_ms = cfg.block_ms,
             }) catch |err| {
                 consecutive_failures += 1;
@@ -126,33 +132,45 @@ pub fn run(allocator: std.mem.Allocator, cfg: *config.Config) !void {
             for (events) |event| {
                 if (shutdown.shouldStop()) break;
 
-                const route = tinder.match(event.stream, event.event_type) orelse {
-                    std.log.warn("no route for {s} event={s}; acking", .{ event.stream, event.event_type });
+                const fields = if (event.fields_json.len > 0) event.fields_json else event.payload_json;
+                const routes = tinder.matchAll(batch_alloc, event.stream, event.event_type, fields) catch {
                     try ack_ids.append(event.entry_id);
                     continue;
                 };
 
-                strike.executeOne(allocator, cfg, &client, &registry, &metrics, &breaker, route, event) catch |err| {
-                    std.log.err("strike failed skill={s} stream={s} entry={s}: {s}", .{
-                        route.skill,
-                        event.stream,
-                        event.entry_id,
-                        @errorName(err),
-                    });
-                    if (!cfg.dry_run) {
-                        bus_dlq.publishDeadLetter(
-                            &client,
-                            cfg.sender,
-                            cfg.dlq_stream,
+                if (routes.len == 0) {
+                    std.log.warn("no binding for {s} event={s}; acking", .{ event.stream, event.event_type });
+                    try ack_ids.append(event.entry_id);
+                    continue;
+                }
+
+                var all_ok = true;
+                for (routes) |route| {
+                    strike.executeOne(allocator, cfg, &client, &registry, &metrics, &breaker, route, event) catch |err| {
+                        all_ok = false;
+                        std.log.err("strike failed skill={s} stream={s} entry={s}: {s}", .{
+                            route.skill,
                             event.stream,
                             event.entry_id,
                             @errorName(err),
-                            event.payload_json,
-                        ) catch {};
-                    }
-                    continue;
-                };
-                try ack_ids.append(event.entry_id);
+                        });
+                        if (!cfg.dry_run) {
+                            bus_dlq.publishDeadLetter(
+                                &client,
+                                cfg.sender,
+                                cfg.dlq_stream,
+                                event.stream,
+                                event.entry_id,
+                                @errorName(err),
+                                event.payload_json,
+                            ) catch {};
+                        }
+                    };
+                }
+                // Ack only when all bindings succeeded (or DLQ written on failure — still ack to avoid poison loops).
+                if (all_ok or !cfg.dry_run) {
+                    try ack_ids.append(event.entry_id);
+                }
             }
 
             if (ack_ids.items.len > 0 and !cfg.dry_run) {

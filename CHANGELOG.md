@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0 — exchange
+- Skill exchange: direct / topic / headers / fanout bindings
+- Skill chains (`redact,drop_fields`), recovery_skill, publisher confirms
+- Prefetch QoS weighted by skill cost; `BEDD_LEAN` publish mode
+
+
 ## 0.7.0 — filter
 - `bedd filter` — NDJSON stdin→stdout skill pipe (use inside workers without `serve`)
 - Direct `redis://` bus transport (XADD / XREADGROUP / XACK) — skip HTTP sidecar hop

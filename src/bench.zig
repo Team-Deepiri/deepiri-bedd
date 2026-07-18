@@ -115,6 +115,10 @@ pub fn runMockBench(
             .skill = skill_name,
             .publish_stream = "outbox",
             .publish_event_type = "bedd.bench.result",
+            .exchange_kind = .direct,
+            .headers = "",
+            .recovery_skill = "",
+            .confirm = true,
         };
 
         strike.executeOne(allocator, &cfg, &client, &reg, &metrics, &breaker, route, events[0]) catch {
@@ -321,6 +325,10 @@ pub fn runRedisBench(
             .skill = skill_name,
             .publish_stream = "bedd-bench-outbox",
             .publish_event_type = "bedd.bench.result",
+            .exchange_kind = .direct,
+            .headers = "",
+            .recovery_skill = "",
+            .confirm = true,
         };
         strike.executeOne(allocator, &cfg, &client, &reg, &metrics, &breaker, route, events[0]) catch {
             err += 1;

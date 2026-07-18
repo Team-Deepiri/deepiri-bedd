@@ -62,52 +62,117 @@ pub fn executeOne(
     event: bus.StreamEvent,
 ) !void {
     const started_ns = std.time.nanoTimestamp();
-    const ctx = skill.SkillContext{
-        .allocator = allocator,
-        .stream = event.stream,
-        .entry_id = event.entry_id,
-        .event_type = event.event_type,
-    };
 
-    const result = registry.run(route.skill, ctx, event.payload_json) catch |err| {
+    const result = runSkillChain(allocator, registry, route.skill, event) catch |err| {
+        // Recovery skill (optional) before surfacing failure to caller/DLQ.
+        if (route.recovery_skill.len > 0) {
+            std.log.warn("skill chain failed; trying recovery_skill={s}", .{route.recovery_skill});
+            const recovered = runSkillChain(allocator, registry, route.recovery_skill, event) catch {
+                metrics.record(event.stream, route.skill, false, 0);
+                return err;
+            };
+            defer recovered.deinit(allocator);
+            try publishResult(allocator, cfg, client, metrics, breaker, route, event, recovered.payload_json, started_ns);
+            return;
+        }
         metrics.record(event.stream, route.skill, false, 0);
-        std.log.err("skill {s} failed on {s}/{s}: {s}", .{
-            route.skill,
-            event.stream,
-            event.entry_id,
-            @errorName(err),
-        });
         return err;
     };
     defer result.deinit(allocator);
 
-    const wrapped = try jsonx.wrapStrikeResult(
-        allocator,
-        route.skill,
-        event.stream,
-        event.entry_id,
-        result.payload_json,
-    );
-    defer allocator.free(wrapped);
+    try publishResult(allocator, cfg, client, metrics, breaker, route, event, result.payload_json, started_ns);
+}
 
-    const pub_event = result.event_type_override orelse route.publish_event_type;
+fn runSkillChain(
+    allocator: std.mem.Allocator,
+    registry: *skill.Registry,
+    skill_spec: []const u8,
+    event: bus.StreamEvent,
+) !skill.SkillResult {
+    var current = try allocator.dupe(u8, event.payload_json);
+    errdefer allocator.free(current);
+
+    var it = std.mem.splitScalar(u8, skill_spec, ',');
+    var ran_any = false;
+
+    while (it.next()) |part| {
+        const name = std.mem.trim(u8, part, " \t");
+        if (name.len == 0) continue;
+        ran_any = true;
+        const ctx = skill.SkillContext{
+            .allocator = allocator,
+            .stream = event.stream,
+            .entry_id = event.entry_id,
+            .event_type = event.event_type,
+        };
+        const next = try registry.run(name, ctx, current);
+        allocator.free(current);
+        current = next.payload_json;
+        if (next.event_type_override) |e| allocator.free(e);
+    }
+
+    if (!ran_any) {
+        allocator.free(current);
+        return skill.SkillError.SkillNotFound;
+    }
+
+    return .{ .payload_json = current };
+}
+
+fn publishResult(
+    allocator: std.mem.Allocator,
+    cfg: *const config.Config,
+    client: *bus.Client,
+    metrics: *ember.Ember,
+    breaker: *publish_retry.CircuitBreaker,
+    route: tinder.Route,
+    event: bus.StreamEvent,
+    payload_json: []const u8,
+    started_ns: i128,
+) !void {
+    const lean = cfg.lean;
+    const to_publish = if (lean)
+        try allocator.dupe(u8, payload_json)
+    else
+        try jsonx.wrapStrikeResult(allocator, route.skill, event.stream, event.entry_id, payload_json);
+    defer allocator.free(to_publish);
+
+    const pub_event = route.publish_event_type;
 
     if (cfg.dry_run) {
         std.log.info("dry-run publish stream={s} event={s} payload_len={d}", .{
             route.publish_stream,
             pub_event,
-            wrapped.len,
+            to_publish.len,
         });
     } else {
         const pub_res = try publish_retry.publishWithRetry(client, .{
             .stream = route.publish_stream,
             .event_type = pub_event,
             .sender = cfg.sender,
-            .payload_json = wrapped,
+            .payload_json = to_publish,
         }, breaker, 4);
         defer pub_res.deinit(allocator);
         metrics.publishes += 1;
         std.log.info("published entry_id={s} stream={s}", .{ pub_res.entry_id, route.publish_stream });
+
+        // Publisher confirm: optional confirm stream after successful publish.
+        if (route.confirm and cfg.confirms and cfg.confirm_stream.len > 0) {
+            const conf = try std.fmt.allocPrint(
+                allocator,
+                \\{{"confirmed":true,"source_stream":"{s}","source_entry":"{s}","publish_stream":"{s}","publish_entry":"{s}"}}
+            ,
+                .{ event.stream, event.entry_id, route.publish_stream, pub_res.entry_id },
+            );
+            defer allocator.free(conf);
+            const c_res = client.publish(.{
+                .stream = cfg.confirm_stream,
+                .event_type = "bedd.confirm",
+                .sender = cfg.sender,
+                .payload_json = conf,
+            }) catch null;
+            if (c_res) |cr| cr.deinit(allocator);
+        }
     }
 
     const elapsed = std.time.nanoTimestamp() - started_ns;
