@@ -19,6 +19,10 @@ pub const json_builder = @import("json/builder.zig");
 pub const json_escape = @import("json/escape.zig");
 pub const prometheus = @import("admin/prometheus.zig");
 pub const shutdown = @import("shutdown.zig");
+pub const mock_sidecar = @import("mock_sidecar.zig");
+pub const publish_retry = @import("publish_retry.zig");
+pub const tinder_validate = @import("tinder_validate.zig");
+pub const integration_test = @import("integration_test.zig");
 
 test {
     _ = bus;
@@ -41,4 +45,8 @@ test {
     _ = json_escape;
     _ = prometheus;
     _ = shutdown;
+    _ = mock_sidecar;
+    _ = publish_retry;
+    _ = tinder_validate;
+    _ = integration_test;
 }

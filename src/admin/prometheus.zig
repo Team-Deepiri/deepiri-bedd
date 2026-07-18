@@ -22,6 +22,17 @@ pub fn render(metrics: *const ember.Ember, allocator: std.mem.Allocator) ![]u8 {
         \\# HELP flint_reads_total Read loops
         \\# TYPE flint_reads_total counter
         \\flint_reads_total {d}
+        \\# HELP flint_strike_latency_ms_sum Strike latency sum
+        \\# TYPE flint_strike_latency_ms_sum counter
+        \\flint_strike_latency_ms_sum {d}
+        \\# HELP flint_strike_latency_bucket Strike latency histogram buckets
+        \\# TYPE flint_strike_latency_bucket counter
+        \\flint_strike_latency_bucket{{le="1"}} {d}
+        \\flint_strike_latency_bucket{{le="5"}} {d}
+        \\flint_strike_latency_bucket{{le="25"}} {d}
+        \\flint_strike_latency_bucket{{le="100"}} {d}
+        \\flint_strike_latency_bucket{{le="500"}} {d}
+        \\flint_strike_latency_bucket{{le="+Inf"}} {d}
         \\
     , .{
         version.semver,
@@ -31,6 +42,13 @@ pub fn render(metrics: *const ember.Ember, allocator: std.mem.Allocator) ![]u8 {
         metrics.publishes,
         metrics.acks,
         metrics.reads,
+        metrics.latency_sum_ms,
+        metrics.latency_buckets[0],
+        metrics.latency_buckets[0] + metrics.latency_buckets[1],
+        metrics.latency_buckets[0] + metrics.latency_buckets[1] + metrics.latency_buckets[2],
+        metrics.latency_buckets[0] + metrics.latency_buckets[1] + metrics.latency_buckets[2] + metrics.latency_buckets[3],
+        metrics.latency_buckets[0] + metrics.latency_buckets[1] + metrics.latency_buckets[2] + metrics.latency_buckets[3] + metrics.latency_buckets[4],
+        metrics.latency_buckets[0] + metrics.latency_buckets[1] + metrics.latency_buckets[2] + metrics.latency_buckets[3] + metrics.latency_buckets[4] + metrics.latency_buckets[5],
     });
 }
 

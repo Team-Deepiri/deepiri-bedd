@@ -6,6 +6,8 @@ const skill = @import("skill/mod.zig");
 const strike = @import("strike.zig");
 const eval = @import("eval.zig");
 const shutdown = @import("shutdown.zig");
+const tinder_validate = @import("tinder_validate.zig");
+const mock_sidecar = @import("mock_sidecar.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -56,12 +58,25 @@ pub fn main() !void {
         try eval.evalFromArgs(allocator, cfg.skills_dir, skill_name, input);
         return;
     }
+    if (eql(command, "tinder")) {
+        const sub = args.next() orelse "validate";
+        if (!eql(sub, "validate")) {
+            try std.io.getStdErr().writer().writeAll("usage: flint tinder validate [path]\n");
+            std.process.exit(2);
+        }
+        const path = args.next() orelse cfg.tinder_path orelse "tinder.example.json";
+        const code = try tinder_validate.printValidation(allocator, path);
+        std.process.exit(code);
+    }
+    if (eql(command, "demo")) {
+        try runDemo(allocator, &cfg);
+        return;
+    }
     if (eql(command, "serve")) {
         try serve.run(allocator, &cfg);
         return;
     }
     if (eql(command, "stop-check")) {
-        // Internal: verify signal module links
         shutdown.installSignals();
         try std.io.getStdOut().writer().writeAll("signals installed\n");
         return;
@@ -70,6 +85,64 @@ pub fn main() !void {
     try std.io.getStdErr().writer().print("flint: unknown command '{s}'\n", .{command});
     try printHelp();
     std.process.exit(1);
+}
+
+fn runDemo(allocator: std.mem.Allocator, cfg: *config.Config) !void {
+    const out = std.io.getStdOut().writer();
+    try out.writeAll("flint demo — mock Sugar Glider + one artifact strike\n");
+
+    var mock = mock_sidecar.MockSidecar.init(allocator, 19128);
+    try mock.start();
+    defer mock.deinit();
+
+    try mock.seed(
+        "document.artifacts",
+        "document.artifacts.route",
+        \\{"documentId":"demo-1","artifactType":"document.extraction","token":"should-redact"}
+    ,
+    );
+
+    allocator.free(cfg.sugar_glider_url);
+    cfg.sugar_glider_url = try allocator.dupe(u8, "http://127.0.0.1:19128");
+    cfg.dry_run = false;
+
+    var client = bus.Client.init(allocator, cfg.*);
+    defer client.deinit();
+    try out.print("  mock health: {}\n", .{try client.health()});
+
+    const events = try client.read(.{
+        .stream = "document.artifacts",
+        .consumer_group = "flint-demo",
+        .consumer_name = "demo-1",
+        .count = 5,
+        .block_ms = 200,
+    });
+    defer {
+        for (events) |e| e.deinit(allocator);
+        allocator.free(events);
+    }
+    try out.print("  read events: {d}\n", .{events.len});
+    if (events.len == 0) {
+        try out.writeAll("  no events — demo failed\n");
+        std.process.exit(1);
+    }
+
+    // Strike with redact then claim via eval path for clarity
+    try eval.evalFromArgs(allocator, cfg.skills_dir, "redact", events[0].payload_json);
+    try eval.evalFromArgs(allocator, cfg.skills_dir, "artifact_claim", events[0].payload_json);
+
+    const pub_res = try client.publish(.{
+        .stream = "inference-events",
+        .event_type = "flint.demo.result",
+        .sender = cfg.sender,
+        .payload_json = "{\"demo\":true}",
+    });
+    defer pub_res.deinit(allocator);
+    try out.print("  published: {s}\n", .{pub_res.entry_id});
+
+    _ = try client.ack("document.artifacts", "flint-demo", &.{events[0].entry_id});
+    try out.print("  mock published={d} acked={d}\n", .{ mock.published, mock.acked });
+    try out.writeAll("demo ok\n");
 }
 
 fn eql(a: []const u8, b: []const u8) bool {
@@ -86,7 +159,9 @@ fn printHelp() !void {
         \\  flint doctor
         \\  flint skills
         \\  flint eval <skill> '<json>'|@file.json
+        \\  flint tinder validate [path]
         \\  flint strike [stream] [event_type] [skill]
+        \\  flint demo
         \\  flint serve
         \\
         \\Env:
@@ -105,6 +180,7 @@ fn printHelp() !void {
         \\Signals (serve):
         \\  SIGTERM / SIGINT  graceful stop
         \\  SIGHUP            reload tinder routes
+        \\  (also reloads when tinder file mtime changes)
         \\
     );
 }

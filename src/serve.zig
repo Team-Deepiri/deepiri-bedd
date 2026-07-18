@@ -10,6 +10,8 @@ const admin = @import("admin/server.zig");
 const bus_dlq = @import("bus_dlq.zig");
 const util_log = @import("util/log.zig");
 const retry = @import("retry.zig");
+const publish_retry = @import("publish_retry.zig");
+const fsutil = @import("util/fsutil.zig");
 
 pub fn run(allocator: std.mem.Allocator, cfg: *config.Config) !void {
     shutdown.installSignals();
@@ -22,6 +24,7 @@ pub fn run(allocator: std.mem.Allocator, cfg: *config.Config) !void {
     defer registry.deinit();
 
     var metrics = ember_mod.Ember{};
+    var breaker = publish_retry.CircuitBreaker{};
     var client = bus.Client.init(allocator, cfg.*);
     defer client.deinit();
 
@@ -40,6 +43,11 @@ pub fn run(allocator: std.mem.Allocator, cfg: *config.Config) !void {
     var streams = try tinder.uniqueStreams(allocator);
     defer allocator.free(streams);
 
+    var last_mtime: i128 = 0;
+    if (cfg.tinder_path) |path| {
+        last_mtime = fileMtime(path);
+    }
+
     const out = std.io.getStdOut().writer();
     try out.print("flint serve\n", .{});
     try out.print("  version: {s}\n", .{config.version});
@@ -54,8 +62,17 @@ pub fn run(allocator: std.mem.Allocator, cfg: *config.Config) !void {
 
     var consecutive_failures: u32 = 0;
     while (!shutdown.shouldStop()) {
-        if (shutdown.takeReload()) {
-            std.log.info("SIGHUP: reloading tinder", .{});
+        // SIGHUP or tinder file mtime change → reload
+        var should_reload = shutdown.takeReload();
+        if (cfg.tinder_path) |path| {
+            const mt = fileMtime(path);
+            if (mt != 0 and mt != last_mtime) {
+                last_mtime = mt;
+                should_reload = true;
+            }
+        }
+        if (should_reload) {
+            std.log.info("reloading tinder", .{});
             if (cfg.tinder_path) |path| {
                 const next = tinder_mod.loadFromFile(allocator, path) catch |err| {
                     std.log.err("tinder reload failed: {s}", .{@errorName(err)});
@@ -112,7 +129,7 @@ pub fn run(allocator: std.mem.Allocator, cfg: *config.Config) !void {
                     continue;
                 };
 
-                strike.executeOne(allocator, cfg, &client, &registry, &metrics, route, event) catch |err| {
+                strike.executeOne(allocator, cfg, &client, &registry, &metrics, &breaker, route, event) catch |err| {
                     std.log.err("strike failed skill={s} stream={s} entry={s}: {s}", .{
                         route.skill,
                         event.stream,
@@ -156,6 +173,14 @@ pub fn run(allocator: std.mem.Allocator, cfg: *config.Config) !void {
 
     std.log.info("flint serve shutting down cleanly", .{});
     try metrics.print(out);
+    _ = fsutil;
+}
+
+fn fileMtime(path: []const u8) i128 {
+    const file = std.fs.cwd().openFile(path, .{}) catch return 0;
+    defer file.close();
+    const st = file.stat() catch return 0;
+    return st.mtime;
 }
 
 fn printStreams(out: anytype, streams: []const []const u8) !void {

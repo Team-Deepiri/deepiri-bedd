@@ -5,6 +5,7 @@ const ember = @import("ember.zig");
 const jsonx = @import("jsonx.zig");
 const skill = @import("skill/mod.zig");
 const tinder = @import("tinder.zig");
+const publish_retry = @import("publish_retry.zig");
 
 pub fn dryRun(
     allocator: std.mem.Allocator,
@@ -56,6 +57,7 @@ pub fn executeOne(
     client: *bus.Client,
     registry: *skill.Registry,
     metrics: *ember.Ember,
+    breaker: *publish_retry.CircuitBreaker,
     route: tinder.Route,
     event: bus.StreamEvent,
 ) !void {
@@ -97,12 +99,12 @@ pub fn executeOne(
             wrapped.len,
         });
     } else {
-        const pub_res = try client.publish(.{
+        const pub_res = try publish_retry.publishWithRetry(client, .{
             .stream = route.publish_stream,
             .event_type = pub_event,
             .sender = cfg.sender,
             .payload_json = wrapped,
-        });
+        }, breaker, 4);
         defer pub_res.deinit(allocator);
         metrics.publishes += 1;
         std.log.info("published entry_id={s} stream={s}", .{ pub_res.entry_id, route.publish_stream });
@@ -111,8 +113,4 @@ pub fn executeOne(
     const elapsed = std.time.nanoTimestamp() - started_ns;
     const ms: u64 = if (elapsed > 0) @intCast(@divTrunc(elapsed, std.time.ns_per_ms)) else 0;
     metrics.record(event.stream, route.skill, true, ms);
-}
-
-test "dryRun compiles via execute path" {
-    try std.testing.expect(true);
 }
