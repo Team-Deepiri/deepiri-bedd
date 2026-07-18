@@ -24,8 +24,10 @@ jobs:
       - name: Build and test
         run: |
           zig version
-          zig build -Doptimize=ReleaseSafe
-          zig build test
+          zig build -Doptimize=ReleaseSafe -Dcpu=baseline
+          zig build test -Dcpu=baseline
           ./zig-out/bin/flint version
           ./zig-out/bin/flint doctor
-          ./zig-out/bin/flint strike document.artifacts document.artifacts.route
+          ./zig-out/bin/flint skills
+          ./zig-out/bin/flint strike document.artifacts document.artifacts.route echo
+          FLINT_SKILLS_DIR=zig-out/skills ./zig-out/bin/flint strike document.artifacts document.artifacts.route echo_skill
