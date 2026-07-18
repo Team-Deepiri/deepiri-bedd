@@ -1,16 +1,29 @@
 # deepiri-bedd
 
-**Bedd** is a portable stream skill runtime (Zig): HTTP bus in → route table → native/WASM skill → bus out → ack.
+**Bedd** is a Bun-style **runtime/CLI** for stream skills (Zig) — not a platform microservice.
 
-It does not hardcode any host product's topics or services. Point `BEDD_BUS_URL` at any bus that speaks the Bedd HTTP shape (`/healthz`, `/readyz`, `/v1/publish`, `/v1/read`, `/v1/ack`), load a route file, drop skills under `BEDD_SKILLS_DIR`.
+Install it into a worker image (or on PATH), then `bedd serve` / `bedd eval` / `bedd bench`. Hosts supply `BEDD_BUS_URL` + tinder routes + skills. See [docs/INSTALL.md](docs/INSTALL.md).
 
-## Build
+HTTP bus in → route table → native/WASM skill → bus out → ack.
+
+## Install
 
 ```bash
-# Zig 0.13.0; use -Dcpu=baseline on WSL if needed
+./install.sh
+# or Zig 0.13:
 zig build -Doptimize=ReleaseSafe -Dcpu=baseline
-zig build test -Dcpu=baseline
+export PATH="$PWD/zig-out/bin:$PATH"
 ```
+
+Docker into **your** service (like `COPY --from=oven/bun`):
+
+```dockerfile
+FROM ghcr.io/team-deepiri/bedd:0.6 AS bedd
+FROM your-base
+COPY --from=bedd /usr/local/bin/bedd /usr/local/bin/bedd
+```
+
+Do **not** run Bedd as a separate compose service next to Sugar Glider.
 
 ## Quick start
 

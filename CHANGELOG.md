@@ -1,5 +1,6 @@
 # Changelog
 
+- Bun-style `install.sh` + runtime Docker image (COPY into host Dockerfiles; not a compose service)
 ## 0.6.0 — spark
 - `bedd bench` — mock-bus e2e perf (throughput, p50/p95/p99, error rate, JSON report)
 - Hardened for integration/perf experiments against host buses
