@@ -14,6 +14,7 @@ pub const Config = struct {
     block_ms: i64,
     read_count: i64,
     dry_run: bool,
+    admin_port: u16,
 
     pub fn deinit(self: *Config) void {
         self.allocator.free(self.sugar_glider_url);
@@ -67,6 +68,7 @@ pub fn loadFromEnv(allocator: std.mem.Allocator) !Config {
     const block_ms: i64 = @intCast(parseU64(std.posix.getenv("FLINT_BLOCK_MS"), 2000));
     const read_count: i64 = @intCast(parseU64(std.posix.getenv("FLINT_READ_COUNT"), 10));
     const dry_run = parseBool(std.posix.getenv("FLINT_DRY_RUN"), false);
+    const admin_port: u16 = @intCast(parseU64(std.posix.getenv("FLINT_ADMIN_PORT"), 9108));
 
     return .{
         .allocator = allocator,
@@ -80,6 +82,7 @@ pub fn loadFromEnv(allocator: std.mem.Allocator) !Config {
         .block_ms = block_ms,
         .read_count = read_count,
         .dry_run = dry_run,
+        .admin_port = admin_port,
     };
 }
 
