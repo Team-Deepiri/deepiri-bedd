@@ -9,9 +9,12 @@ const shutdown = @import("shutdown.zig");
 const admin = @import("admin/server.zig");
 const bus_dlq = @import("bus_dlq.zig");
 const util_log = @import("util/log.zig");
-const util_env = @import("util/env.zig");
+const retry = @import("retry.zig");
 
 pub fn run(allocator: std.mem.Allocator, cfg: *config.Config) !void {
+    shutdown.installSignals();
+    util_log.setLevelFromEnv();
+
     var tinder = try tinder_mod.loadOrDefault(allocator, cfg.tinder_path);
     defer tinder.deinit();
 
@@ -22,36 +25,54 @@ pub fn run(allocator: std.mem.Allocator, cfg: *config.Config) !void {
     var client = bus.Client.init(allocator, cfg.*);
     defer client.deinit();
 
-    util_log.setLevelFromEnv();
     var admin_server = admin.Server{
         .allocator = allocator,
         .cfg = cfg,
         .metrics = &metrics,
-        .port = @intCast(util_env.getU64("FLINT_ADMIN_PORT", 9108)),
+        .bus_client = &client,
+        .port = cfg.admin_port,
     };
     admin_server.start() catch |err| {
         std.log.warn("admin server failed to start: {s}", .{@errorName(err)});
     };
     defer admin_server.shutdown();
 
-    const streams = try tinder.uniqueStreams(allocator);
+    var streams = try tinder.uniqueStreams(allocator);
     defer allocator.free(streams);
 
     const out = std.io.getStdOut().writer();
     try out.print("flint serve\n", .{});
+    try out.print("  version: {s}\n", .{config.version});
     try out.print("  sidecar: {s}\n", .{cfg.sugar_glider_url});
     try out.print("  group:   {s}\n", .{cfg.consumer_group});
     try out.print("  name:    {s}\n", .{cfg.consumer_name});
+    try out.print("  admin:   :{d}\n", .{cfg.admin_port});
     try out.print("  dry_run: {}\n", .{cfg.dry_run});
-    try out.print("  streams: {d}\n", .{streams.len});
-    for (streams) |s| try out.print("    - {s}\n", .{s});
+    try printStreams(out, streams);
     try out.writeAll("  skills:\n");
     try skill.Registry.listBuiltins(out);
 
     var consecutive_failures: u32 = 0;
     while (!shutdown.shouldStop()) {
+        if (shutdown.takeReload()) {
+            std.log.info("SIGHUP: reloading tinder", .{});
+            if (cfg.tinder_path) |path| {
+                const next = tinder_mod.loadFromFile(allocator, path) catch |err| {
+                    std.log.err("tinder reload failed: {s}", .{@errorName(err)});
+                    continue;
+                };
+                tinder.deinit();
+                tinder = next;
+                allocator.free(streams);
+                streams = try tinder.uniqueStreams(allocator);
+                try printStreams(out, streams);
+            }
+        }
+
         var progressed = false;
         for (streams) |stream| {
+            if (shutdown.shouldStop()) break;
+
             const events = client.read(.{
                 .stream = stream,
                 .consumer_group = cfg.consumer_group,
@@ -65,9 +86,7 @@ pub fn run(allocator: std.mem.Allocator, cfg: *config.Config) !void {
                     @errorName(err),
                     consecutive_failures,
                 });
-                if (consecutive_failures > 30) {
-                    std.time.sleep(2 * std.time.ns_per_s);
-                }
+                retry.sleepAttempt(@min(consecutive_failures, 8));
                 continue;
             };
             defer {
@@ -85,6 +104,8 @@ pub fn run(allocator: std.mem.Allocator, cfg: *config.Config) !void {
             defer ack_ids.deinit();
 
             for (events) |event| {
+                if (shutdown.shouldStop()) break;
+
                 const route = tinder.match(event.stream, event.event_type) orelse {
                     std.log.warn("no route for {s} event={s}; acking", .{ event.stream, event.event_type });
                     try ack_ids.append(event.entry_id);
@@ -92,10 +113,22 @@ pub fn run(allocator: std.mem.Allocator, cfg: *config.Config) !void {
                 };
 
                 strike.executeOne(allocator, cfg, &client, &registry, &metrics, route, event) catch |err| {
+                    std.log.err("strike failed skill={s} stream={s} entry={s}: {s}", .{
+                        route.skill,
+                        event.stream,
+                        event.entry_id,
+                        @errorName(err),
+                    });
                     if (!cfg.dry_run) {
-                        bus_dlq.publishDeadLetter(&client, cfg.sender, event.stream, event.entry_id, @errorName(err), event.payload_json) catch {};
+                        bus_dlq.publishDeadLetter(
+                            &client,
+                            cfg.sender,
+                            event.stream,
+                            event.entry_id,
+                            @errorName(err),
+                            event.payload_json,
+                        ) catch {};
                     }
-                    // Leave unacked for retry
                     continue;
                 };
                 try ack_ids.append(event.entry_id);
@@ -113,13 +146,19 @@ pub fn run(allocator: std.mem.Allocator, cfg: *config.Config) !void {
         }
 
         if (!progressed) {
-            // brief pause when idle across all streams (block_ms already waited per read)
             std.time.sleep(50 * std.time.ns_per_ms);
         }
 
-        // Periodic ember dump every ~100 reads
         if (metrics.reads > 0 and metrics.reads % 50 == 0) {
             try metrics.print(std.io.getStdErr().writer());
         }
     }
+
+    std.log.info("flint serve shutting down cleanly", .{});
+    try metrics.print(out);
+}
+
+fn printStreams(out: anytype, streams: []const []const u8) !void {
+    try out.print("  streams: {d}\n", .{streams.len});
+    for (streams) |s| try out.print("    - {s}\n", .{s});
 }
