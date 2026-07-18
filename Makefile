@@ -1,0 +1,22 @@
+ZIG ?= zig
+CPU ?= baseline
+
+.PHONY: build test smoke skills docker helm-lint
+
+build:
+	$(ZIG) build -Doptimize=ReleaseSafe -Dcpu=$(CPU)
+
+test:
+	$(ZIG) build test -Dcpu=$(CPU)
+
+skills:
+	$(ZIG) build skills -Dcpu=$(CPU)
+
+smoke: build
+	./scripts/smoke.sh
+
+docker:
+	docker build -t deepiri-flint:local .
+
+helm-lint:
+	helm lint deploy/helm/flint
