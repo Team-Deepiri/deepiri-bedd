@@ -46,15 +46,55 @@ pub fn run(
         ok += 1;
 
         if (raw_payload) {
-            // Prefer nested "redacted" / input / whole payload
             try stdout.writeAll(result.payload_json);
             try stdout.writeAll("\n");
         } else {
-            try stdout.writeAll(result.payload_json);
+            // Prefer skill's cleaned payload over wrapSkill envelopes that re-embed input
+            // (redact historically wraps with "input" — that would leak secrets on stdout).
+            const emit = unwrapClean(result.payload_json) orelse result.payload_json;
+            try stdout.writeAll(emit);
             try stdout.writeAll("\n");
         }
     }
 
     try stderr.print("bedd filter skill={s} lines={d} ok={d} err={d}\n", .{ skill_name, n, ok, err_n });
     if (err_n > 0) std.process.exit(1);
+}
+
+/// If skill wrapped as {"redacted":{...},...} or {"ok":true,"redacted":...}, emit the cleaned object.
+fn unwrapClean(payload: []const u8) ?[]const u8 {
+    for ([_][]const u8{ "\"redacted\"", "\"payload\"" }) |key| {
+        const idx = std.mem.indexOf(u8, payload, key) orelse continue;
+        var j = idx + key.len;
+        while (j < payload.len and (payload[j] == ' ' or payload[j] == ':' or payload[j] == '\t')) : (j += 1) {}
+        if (j >= payload.len) continue;
+        if (payload[j] == '{') {
+            const start = j;
+            var depth: i32 = 0;
+            var in_str = false;
+            var escape = false;
+            while (j < payload.len) : (j += 1) {
+                const c = payload[j];
+                if (escape) {
+                    escape = false;
+                    continue;
+                }
+                if (c == '\\' and in_str) {
+                    escape = true;
+                    continue;
+                }
+                if (c == '"') {
+                    in_str = !in_str;
+                    continue;
+                }
+                if (in_str) continue;
+                if (c == '{') depth += 1;
+                if (c == '}') {
+                    depth -= 1;
+                    if (depth == 0) return payload[start .. j + 1];
+                }
+            }
+        }
+    }
+    return null;
 }
