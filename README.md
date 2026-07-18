@@ -4,6 +4,10 @@
 
 A single Zig binary: **consume** Sugar Glider streams → **run** a skill (native or WASM) → **publish** results → **ACK**.
 
+## Status
+
+**v0.3 (strike)** — full serve loop, admin metrics, DLQ, Helm, 15+ builtins, wasm3 skills.
+
 ## Quick start
 
 ```bash
@@ -85,6 +89,8 @@ See `tinder.example.json`. Env: `FLINT_TINDER=/path/to/tinder.json`.
 | `FLINT_DRY_RUN` | `false` |
 | `FLINT_BLOCK_MS` | `2000` |
 | `FLINT_READ_COUNT` | `10` |
+| `FLINT_ADMIN_PORT` | `9108` |
+| `FLINT_LOG_LEVEL` | `info` |
 
 ## License
 
