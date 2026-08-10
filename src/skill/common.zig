@@ -15,19 +15,31 @@ pub fn redactSecrets(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     errdefer allocator.free(out);
     var len = out.len;
 
+    // Matches keys *ending* in a sensitive term (client_secret, access_token,
+    // refresh_token, webhook_secret, ...) not just an exact key name — real
+    // provider payloads (OAuth, GitHub, etc.) almost always use compound key
+    // names. The closing quote must be immediately followed by ':' (after
+    // optional whitespace), which only ever terminates a JSON *key* — a
+    // value's closing quote is followed by ',' '}' or ']' — so this cannot
+    // false-positive-match inside a string value.
     for (secret_keys) |key| {
-        var needle_buf: [64]u8 = undefined;
-        if (key.len + 2 > needle_buf.len) continue;
-        needle_buf[0] = '"';
-        @memcpy(needle_buf[1 .. 1 + key.len], key);
-        needle_buf[1 + key.len] = '"';
-        const needle = needle_buf[0 .. key.len + 2];
+        var needle_buf: [65]u8 = undefined;
+        if (key.len + 1 > needle_buf.len) continue;
+        @memcpy(needle_buf[0..key.len], key);
+        needle_buf[key.len] = '"';
+        const needle = needle_buf[0 .. key.len + 1];
 
         var search_from: usize = 0;
         while (search_from < len) {
             const idx = std.mem.indexOfPos(u8, out[0..len], search_from, needle) orelse break;
             var j = idx + needle.len;
-            while (j < len and (out[j] == ' ' or out[j] == '\t' or out[j] == ':')) : (j += 1) {}
+            while (j < len and (out[j] == ' ' or out[j] == '\t')) : (j += 1) {}
+            if (j >= len or out[j] != ':') {
+                search_from = idx + 1;
+                continue;
+            }
+            j += 1;
+            while (j < len and (out[j] == ' ' or out[j] == '\t')) : (j += 1) {}
             if (j >= len or out[j] != '"') {
                 search_from = idx + 1;
                 continue;
@@ -137,4 +149,27 @@ test "redactSecrets long secret" {
     defer std.testing.allocator.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "super-long") == null);
     try std.testing.expectEqualStrings("{\"token\":\"***\",\"ok\":true}", out);
+}
+
+test "redactSecrets masks compound provider key names" {
+    const in =
+        \\{"access_token":"a","refresh_token":"b","client_secret":"c","webhook_secret":"d","github_token":"e","account_id":"acme"}
+    ;
+    const out = try redactSecrets(std.testing.allocator, in);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"a\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"b\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"c\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"d\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"e\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"acme\"") != null);
+}
+
+test "redactSecrets does not false-positive inside string values" {
+    const in =
+        \\{"note":"pass the token to the team","x":1}
+    ;
+    const out = try redactSecrets(std.testing.allocator, in);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings(in, out);
 }
