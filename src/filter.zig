@@ -65,6 +65,11 @@ fn runSerial(
         const emit = if (raw_payload) payload.payload_json else unwrapClean(payload.payload_json) orelse payload.payload_json;
         try stdout.writeAll(emit);
         try stdout.writeByte('\n');
+        // Flush per line, not just at EOF — a caller piping one line at a
+        // time through a long-lived `bedd filter` process (the intended
+        // "no extra consumer group" pattern) would otherwise never see a
+        // response until it closes stdin.
+        try stdout_buf.flush();
     }
 
     try stdout_buf.flush();
