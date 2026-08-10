@@ -22,6 +22,10 @@ pub fn redactSecrets(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     // optional whitespace), which only ever terminates a JSON *key* — a
     // value's closing quote is followed by ',' '}' or ']' — so this cannot
     // false-positive-match inside a string value.
+    //
+    // Case-insensitive: real payloads use every casing convention
+    // ("Authorization", "apiKey", "AccessToken", "client_secret", ...) and
+    // the previous exact-lowercase-only match silently missed all of them.
     for (secret_keys) |key| {
         var needle_buf: [65]u8 = undefined;
         if (key.len + 1 > needle_buf.len) continue;
@@ -31,7 +35,7 @@ pub fn redactSecrets(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
 
         var search_from: usize = 0;
         while (search_from < len) {
-            const idx = std.mem.indexOfPos(u8, out[0..len], search_from, needle) orelse break;
+            const idx = std.ascii.indexOfIgnoreCasePos(out[0..len], search_from, needle) orelse break;
             var j = idx + needle.len;
             while (j < len and (out[j] == ' ' or out[j] == '\t')) : (j += 1) {}
             if (j >= len or out[j] != ':') {
@@ -163,6 +167,17 @@ test "redactSecrets masks compound provider key names" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"d\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"e\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"acme\"") != null);
+}
+
+test "redactSecrets matches keys regardless of case" {
+    const in =
+        \\{"Authorization":"a","apiKey":"b","AccessToken":"c","ok":true}
+    ;
+    const out = try redactSecrets(std.testing.allocator, in);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"a\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"b\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"c\"") == null);
 }
 
 test "redactSecrets does not false-positive inside string values" {
