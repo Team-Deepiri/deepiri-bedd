@@ -1,0 +1,94 @@
+name: Release
+
+# Runs after a merge to main. main is only ever advanced by promoting dev (already
+# fully validated by ci.yml/codeql.yml), so this workflow does not re-run the test
+# suite — it just decides whether this push shipped a new version, and if so tags,
+# builds, and publishes it. No CHANGELOG bump means no new version, so it's a no-op.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    name: Tag & publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version from CHANGELOG.md
+        id: version
+        run: |
+          set -euo pipefail
+          VERSION=$(grep -m1 -oP '^## \K[0-9]+\.[0-9]+\.[0-9]+' CHANGELOG.md)
+          if [ -z "$VERSION" ]; then
+            echo "Could not find a '## X.Y.Z' heading at the top of CHANGELOG.md" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether this version is already tagged
+        id: check_tag
+        run: |
+          set -euo pipefail
+          if git rev-parse "refs/tags/v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Extract release notes from CHANGELOG.md
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          awk '/^## /{if (seen) exit; seen=1; next} seen' CHANGELOG.md > /tmp/release-notes.md
+
+      - name: Create and push tag
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${{ steps.version.outputs.version }}" -m "Release v${{ steps.version.outputs.version }}"
+          git push origin "v${{ steps.version.outputs.version }}"
+
+      - name: Log in to GHCR
+        if: steps.check_tag.outputs.exists == 'false'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push image
+        if: steps.check_tag.outputs.exists == 'false'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/team-deepiri/bedd:${{ steps.version.outputs.version }}
+            ghcr.io/team-deepiri/bedd:latest
+
+      - name: Create GitHub release
+        if: steps.check_tag.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ steps.version.outputs.version }}"
+          name: "v${{ steps.version.outputs.version }}"
+          body_path: /tmp/release-notes.md
