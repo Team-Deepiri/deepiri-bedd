@@ -57,15 +57,6 @@ jobs:
           set -euo pipefail
           awk '/^## /{if (seen) exit; seen=1; next} seen' CHANGELOG.md > /tmp/release-notes.md
 
-      - name: Create and push tag
-        if: steps.check_tag.outputs.exists == 'false'
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "v${{ steps.version.outputs.version }}" -m "Release v${{ steps.version.outputs.version }}"
-          git push origin "v${{ steps.version.outputs.version }}"
-
       - name: Log in to GHCR
         if: steps.check_tag.outputs.exists == 'false'
         uses: docker/login-action@v3
@@ -84,6 +75,18 @@ jobs:
           tags: |
             ghcr.io/team-deepiri/bedd:${{ steps.version.outputs.version }}
             ghcr.io/team-deepiri/bedd:latest
+
+      # Pushed only after the image is built and published, so a failed build
+      # doesn't leave a dangling tag with no corresponding image — a rerun after
+      # a build failure still sees exists=false and retries the whole job.
+      - name: Create and push tag
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${{ steps.version.outputs.version }}" -m "Release v${{ steps.version.outputs.version }}"
+          git push origin "v${{ steps.version.outputs.version }}"
 
       - name: Create GitHub release
         if: steps.check_tag.outputs.exists == 'false'
