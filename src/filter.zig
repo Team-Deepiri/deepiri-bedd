@@ -65,6 +65,11 @@ fn runSerial(
         const emit = if (raw_payload) payload.payload_json else unwrapClean(payload.payload_json) orelse payload.payload_json;
         try stdout.writeAll(emit);
         try stdout.writeByte('\n');
+        // Flush per line, not just at EOF — a caller piping one line at a
+        // time through a long-lived `bedd filter` process (the intended
+        // "no extra consumer group" pattern) would otherwise never see a
+        // response until it closes stdin.
+        try stdout_buf.flush();
     }
 
     try stdout_buf.flush();
@@ -208,6 +213,15 @@ fn runParallel(
 }
 
 fn unwrapClean(payload: []const u8) ?[]const u8 {
+    // Only unwrap bedd's own wrapSkill envelope, recognizable by its fixed
+    // leading key ({"skill":"...). Skills running in lean mode (the default
+    // for `bedd filter`) already return clean, unwrapped payloads. Searching
+    // for a bare "redacted"/"payload" substring anywhere in the output — as
+    // this used to do — risks matching a same-named field in the *caller's
+    // own data* (e.g. a message shaped like {"payload": {...}, "headers":
+    // {...}}) and silently discarding everything else in the object,
+    // including fields the caller needed redaction to protect.
+    if (!std.mem.startsWith(u8, payload, "{\"skill\":\"")) return null;
     for ([_][]const u8{ "\"redacted\"", "\"payload\"" }) |key| {
         const idx = std.mem.indexOf(u8, payload, key) orelse continue;
         var j = idx + key.len;
@@ -240,4 +254,21 @@ fn unwrapClean(payload: []const u8) ?[]const u8 {
         }
     }
     return null;
+}
+
+test "unwrapClean ignores caller data containing a literal payload key" {
+    // Not a wrapSkill envelope (no leading {"skill":") — must be left alone,
+    // not truncated down to its "payload" sub-object.
+    const in =
+        \\{"channel":"agent.dispatch","payload":{"task":"extract_invoice"},"headers":{"authorization":"***"}}
+    ;
+    try std.testing.expect(unwrapClean(in) == null);
+}
+
+test "unwrapClean unwraps a genuine wrapSkill envelope" {
+    const in =
+        \\{"skill":"redact","stream":"filter","ok":true,"redacted":{"a":1},"input":{"a":"x"}}
+    ;
+    const out = unwrapClean(in) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("{\"a\":1}", out);
 }
