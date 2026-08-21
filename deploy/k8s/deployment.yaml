@@ -12,7 +12,7 @@ spec:
     spec:
       containers:
         - name: bedd
-          image: ghcr.io/team-deepiri/deepiri-bedd:0.3.0
+          image: ghcr.io/team-deepiri/bedd:0.8.2
           args: ["serve"]
           ports:
             - containerPort: 9108

@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main, dev]
   push:
-    branches: [main, dev]
+    branches: [dev]
   schedule:
     - cron: "17 7 * * 1"
   workflow_dispatch:
@@ -23,6 +23,13 @@ jobs:
     name: Analyze (actions)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Same reasoning as ci.yml: skip the pure dev -> main promotion, since this
+    # exact code was already scanned on the way into dev. Direct-to-main PRs
+    # (e.g. hotfixes) and the weekly schedule still run.
+    if: >-
+      !(github.event_name == 'pull_request' &&
+        github.event.pull_request.base.ref == 'main' &&
+        github.event.pull_request.head.ref == 'dev')
 
     steps:
       - name: Checkout repository
