@@ -3,8 +3,11 @@ name: CodeQL
 on:
   pull_request:
     branches: [main, dev]
-  push:
-    branches: [dev]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE*'
   schedule:
     - cron: "17 7 * * 1"
   workflow_dispatch:
