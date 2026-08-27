@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const bus = @import("bus.zig");
 
 /// Minimal Redis Streams client (RESP2) for `BEDD_BUS_URL=redis://host:port[/db]`.
@@ -28,11 +29,17 @@ pub const Conn = struct {
         if (list.addrs.len == 0) return RedisError.ConnectFailed;
 
         const stream = std.net.tcpConnectToAddress(list.addrs[0]) catch return RedisError.ConnectFailed;
-        // TCP_NODELAY — cut small-packet latency on the hot path
+        // TCP_NODELAY — cut small-packet latency on the hot path.
+        // Zig 0.13's Darwin std.c has no TCP decl, so std.posix.TCP fails to compile there.
+        // TCP_NODELAY is 1 in <netinet/tcp.h> on Linux and Darwin alike.
+        const nodelay: u32 = switch (builtin.target.os.tag) {
+            .linux => std.posix.TCP.NODELAY,
+            else => 1,
+        };
         std.posix.setsockopt(
             stream.handle,
             std.posix.IPPROTO.TCP,
-            std.posix.TCP.NODELAY,
+            nodelay,
             &std.mem.toBytes(@as(c_int, 1)),
         ) catch {};
 
