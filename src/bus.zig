@@ -10,6 +10,8 @@ pub const BusError = error{
     OutOfMemory,
     Unexpected,
     RedisFailed,
+    /// The operation needs a redis:// bus; the HTTP sidecar exposes no equivalent.
+    UnsupportedTransport,
 };
 
 pub const PublishRequest = struct {
@@ -203,6 +205,30 @@ pub const Client = struct {
         }
 
         return try parseReadEvents(self.allocator, body.items);
+    }
+
+    /// Entry count for a stream. Redis-only: the HTTP bus has no length endpoint.
+    pub fn streamLen(self: *Client, stream: []const u8) !i64 {
+        if (self.redis) |*r| {
+            return r.xlen(stream) catch return BusError.RedisFailed;
+        }
+        return BusError.UnsupportedTransport;
+    }
+
+    /// Non-destructive scan of a stream. Redis-only — see `streamLen`.
+    pub fn range(self: *Client, stream: []const u8, start: []const u8, end: []const u8, count: i64) ![]StreamEvent {
+        if (self.redis) |*r| {
+            return r.range(stream, start, end, count) catch return BusError.RedisFailed;
+        }
+        return BusError.UnsupportedTransport;
+    }
+
+    /// Permanently remove entries from a stream. Redis-only — see `streamLen`.
+    pub fn del(self: *Client, stream: []const u8, entry_ids: []const []const u8) !i64 {
+        if (self.redis) |*r| {
+            return r.del(stream, entry_ids) catch return BusError.RedisFailed;
+        }
+        return BusError.UnsupportedTransport;
     }
 
     pub fn ack(self: *Client, stream: []const u8, consumer_group: []const u8, entry_ids: []const []const u8) !i64 {

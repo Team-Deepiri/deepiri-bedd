@@ -10,6 +10,7 @@ const shutdown = @import("shutdown.zig");
 const tinder_validate = @import("tinder_validate.zig");
 const bus_mock = @import("bus_mock.zig");
 const bench = @import("bench.zig");
+const dlq = @import("dlq.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -91,6 +92,10 @@ pub fn main() !void {
         const code = try tinder_validate.printValidation(allocator, path);
         std.process.exit(code);
     }
+    if (eql(command, "dlq")) {
+        try runDlq(allocator, cfg, &args);
+        return;
+    }
     if (eql(command, "demo")) {
         try runDemo(allocator, &cfg);
         return;
@@ -112,6 +117,65 @@ pub fn main() !void {
     try std.io.getStdErr().writer().print("bedd: unknown command '{s}'\n", .{command});
     try printHelp();
     std.process.exit(1);
+}
+
+fn runDlq(allocator: std.mem.Allocator, cfg: config.Config, args: *std.process.ArgIterator) !void {
+    const sub = args.next() orelse "";
+
+    var opts = dlq.Options{};
+    while (args.next()) |a| {
+        if (eql(a, "--json")) {
+            opts.json = true;
+        } else if (eql(a, "--dry-run") or eql(a, "-n")) {
+            opts.dry_run = true;
+        } else if (eql(a, "--keep")) {
+            opts.keep = true;
+        } else if (eql(a, "--error")) {
+            opts.error_filter = args.next();
+        } else if (eql(a, "--source")) {
+            opts.source_filter = args.next();
+        } else if (eql(a, "--to")) {
+            opts.to_stream = args.next();
+        } else if (eql(a, "--limit")) {
+            const v = args.next() orelse "";
+            opts.limit = std.fmt.parseInt(i64, v, 10) catch dlq.default_scan_limit;
+        } else {
+            try std.io.getStdErr().writer().print("bedd dlq: unknown option '{s}'\n", .{a});
+            std.process.exit(2);
+        }
+    }
+    if (opts.limit <= 0) opts.limit = dlq.default_scan_limit;
+
+    if (eql(sub, "stats") or eql(sub, "list") or eql(sub, "replay") or eql(sub, "purge")) {
+        dlq.requireRedis(cfg);
+    }
+
+    if (eql(sub, "stats")) return dlq.stats(allocator, cfg, opts);
+    if (eql(sub, "list")) return dlq.list(allocator, cfg, opts);
+    if (eql(sub, "replay")) {
+        const report = try dlq.replay(allocator, cfg, opts);
+        // Non-zero exit when something matched but could not be replayed, so a
+        // cron or CI job notices instead of reading the log.
+        if (report.failed > 0) std.process.exit(1);
+        return;
+    }
+    if (eql(sub, "purge")) {
+        _ = try dlq.purge(allocator, cfg, opts);
+        return;
+    }
+
+    try std.io.getStdErr().writer().writeAll(
+        \\usage: bedd dlq <stats|list|replay|purge> [options]
+        \\  --error <substr>   only entries whose error contains this
+        \\  --source <stream>  only entries from this source stream
+        \\  --limit N          entries to scan (default 1000)
+        \\  --json             machine-readable output
+        \\  --dry-run, -n      replay/purge: show what would happen
+        \\  --to <stream>      replay: publish here instead of source_stream
+        \\  --keep             replay: leave entries in the dlq
+        \\
+    );
+    std.process.exit(2);
 }
 
 fn runBench(allocator: std.mem.Allocator, args: *std.process.ArgIterator) !void {
@@ -233,6 +297,7 @@ fn printHelp() !void {
         \\  bedd strike [stream] [event_type] [skill]
         \\  bedd demo
         \\  bedd bench [--mode mock|skill|redis] [--iterations N] [--skills echo,redact] [--json]
+        \\  bedd dlq stats|list|replay|purge [--error S] [--source S] [--limit N] [--json] [-n]
         \\  bedd serve
         \\
         \\Env:
