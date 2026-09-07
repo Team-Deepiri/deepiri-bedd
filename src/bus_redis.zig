@@ -168,6 +168,43 @@ pub const Conn = struct {
         return std.fmt.parseInt(i64, r, 10) catch @intCast(ids.len);
     }
 
+    /// Entry count for a stream. A missing stream is 0, not an error — an empty
+    /// DLQ and a never-created one mean the same thing to an operator.
+    pub fn xlen(self: *Conn, stream_name: []const u8) RedisError!i64 {
+        const r = self.cmdSimple(&.{ "XLEN", stream_name }) catch return 0;
+        defer self.allocator.free(r);
+        return std.fmt.parseInt(i64, r, 10) catch 0;
+    }
+
+    /// Non-destructive scan (XRANGE). Unlike `read` this leaves no consumer-group
+    /// pending entries behind, which is what inspection tooling wants.
+    pub fn range(
+        self: *Conn,
+        stream_name: []const u8,
+        start: []const u8,
+        end: []const u8,
+        count: i64,
+    ) RedisError![]bus.StreamEvent {
+        var count_buf: [24]u8 = undefined;
+        const count_s = std.fmt.bufPrint(&count_buf, "{d}", .{count}) catch return RedisError.Protocol;
+        const raw = try self.cmdRaw(&.{ "XRANGE", stream_name, start, end, "COUNT", count_s });
+        defer self.allocator.free(raw);
+        // XRANGE has no stream-name header, so every reply starts at an entry id
+        // and parseXReadReply falls back to the name we pass in.
+        return try parseXReadReply(self.allocator, raw, stream_name);
+    }
+
+    pub fn del(self: *Conn, stream_name: []const u8, ids: []const []const u8) RedisError!i64 {
+        if (ids.len == 0) return 0;
+        var args = std.ArrayList([]const u8).init(self.allocator);
+        defer args.deinit();
+        try args.appendSlice(&.{ "XDEL", stream_name });
+        for (ids) |id| try args.append(id);
+        const r = try self.cmdSimple(args.items);
+        defer self.allocator.free(r);
+        return std.fmt.parseInt(i64, r, 10) catch 0;
+    }
+
     fn cmdSimple(self: *Conn, parts: []const []const u8) RedisError![]u8 {
         const raw = try self.cmdRaw(parts);
         if (raw.len == 0) {

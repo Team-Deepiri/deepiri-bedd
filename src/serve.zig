@@ -161,6 +161,7 @@ pub fn run(allocator: std.mem.Allocator, cfg: *config.Config) !void {
                                 cfg.dlq_stream,
                                 event.stream,
                                 event.entry_id,
+                                event.event_type,
                                 @errorName(err),
                                 event.payload_json,
                             ) catch {};
