@@ -57,6 +57,71 @@ jobs:
           set -euo pipefail
           awk '/^## /{if (seen) exit; seen=1; next} seen' CHANGELOG.md > /tmp/release-notes.md
 
+      # Zig cross-compiles every release target from this one runner, so there is
+      # no macOS job here. Pinned + checksummed to match ci.yml.
+      - name: Install Zig
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/zig.tar.xz \
+            "https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz"
+          echo "d45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea  /tmp/zig.tar.xz" | sha256sum -c -
+          sudo tar -C /usr/local -xf /tmp/zig.tar.xz
+          echo "/usr/local/zig-linux-x86_64-0.13.0" >> "$GITHUB_PATH"
+
+      # Asset names must stay in the `bedd-<os>-<arch>` shape install.sh builds
+      # its download URL from — see install.sh's OS/ARCH normalisation.
+      # Linux targets are musl so the binary is static and runs anywhere.
+      - name: Build release binaries
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          build() {
+            local zig_target="$1" asset="$2"
+            echo "building $asset ($zig_target)"
+            rm -rf "out/$zig_target"
+            zig build -Doptimize=ReleaseFast -Dcpu=baseline \
+              -Dtarget="$zig_target" -p "out/$zig_target"
+            install -m 755 "out/$zig_target/bin/bedd" "dist/$asset"
+          }
+          build x86_64-linux-musl   bedd-linux-x86_64
+          build aarch64-linux-musl  bedd-linux-aarch64
+          build x86_64-macos        bedd-darwin-x86_64
+          build aarch64-macos       bedd-darwin-aarch64
+
+          cd dist && sha256sum bedd-* > SHA256SUMS && cat SHA256SUMS
+
+      # The native binary is the only one this runner can execute; the others are
+      # checked for the architecture they claim, which is what a bad -Dtarget
+      # would get wrong.
+      - name: Verify binaries
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          ./dist/bedd-linux-x86_64 version
+
+          # `file` words Mach-O differently on Linux and macOS ("... 64-bit arm64
+          # executable" vs "... 64-bit executable arm64"), so match the format and
+          # the architecture separately rather than one fixed phrase.
+          check() {
+            local path="$1" format="$2" arch="$3" out
+            out="$(file -b "$path")"
+            case "$out" in
+              *"$format"*) ;;
+              *) echo "$path: expected $format, got: $out" >&2; exit 1 ;;
+            esac
+            case "$out" in
+              *"$arch"*) ;;
+              *) echo "$path: expected $arch, got: $out" >&2; exit 1 ;;
+            esac
+            echo "$path: $out"
+          }
+          check dist/bedd-linux-x86_64    ELF     x86-64
+          check dist/bedd-linux-aarch64   ELF     aarch64
+          check dist/bedd-darwin-x86_64   Mach-O  x86_64
+          check dist/bedd-darwin-aarch64  Mach-O  arm64
+
       - name: Log in to GHCR
         if: steps.check_tag.outputs.exists == 'false'
         uses: docker/login-action@v3
@@ -95,3 +160,9 @@ jobs:
           tag_name: "v${{ steps.version.outputs.version }}"
           name: "v${{ steps.version.outputs.version }}"
           body_path: /tmp/release-notes.md
+          files: |
+            dist/bedd-linux-x86_64
+            dist/bedd-linux-aarch64
+            dist/bedd-darwin-x86_64
+            dist/bedd-darwin-aarch64
+            dist/SHA256SUMS
